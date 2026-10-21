@@ -87,7 +87,7 @@ UMask=0077
 WorkingDirectory=/opt/atlas-dev-bridge
 RuntimeDirectory=atlas-dev-bridge
 RuntimeDirectoryMode=0700
-ExecStart=/opt/atlas-dev-bridge/tunnel-client run --control-plane.tunnel-id=${TUNNEL_ID} --control-plane.api-key=file:/etc/atlas-dev-bridge/control-plane.key --mcp.command=/opt/atlas-dev-bridge/launch-mcp.sh --health.unix-socket=/run/atlas-dev-bridge/health.sock --log.level=warn
+ExecStart=/opt/atlas-dev-bridge/tunnel-client run --control-plane.tunnel-id=${TUNNEL_ID} --control-plane.api-key=file:/etc/atlas-dev-bridge/control-plane.key --mcp.command=/opt/atlas-dev-bridge/launch-mcp.sh --health.unix-socket=/run/atlas-dev-bridge/health.sock --log.format=json --log.level=warn
 Restart=on-failure
 RestartSec=5
 KillMode=control-group
@@ -367,7 +367,7 @@ if __name__ == '__main__':
     MCP.run(transport='stdio')
 ATLAS_EMBEDDED_FILE_1_END
 cat > test_bridge.py <<'ATLAS_EMBEDDED_FILE_2_END'
-import asyncio, hashlib, json, os, sys, tempfile, unittest
+import asyncio, hashlib, json, os, sys, tempfile, unittest, subprocess
 from pathlib import Path
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -420,6 +420,31 @@ class BridgeTest(unittest.IsolatedAsyncioTestCase):
     self.assertNotIn(forbidden,audit)
    self.assertEqual(state.stat().st_mode & 0o777,0o700)
 
+class CLIConfigTest(unittest.TestCase):
+ def test_log_flag_pair(self):
+  base=Path(__file__).parent
+  binary=base/'tunnel-client'
+  self.assertTrue(binary.is_file(), 'Official tunnel-client must be adjacent for CLI validation')
+  installer=base/'install.sh'
+  if installer.exists():
+   unit_line=next(line for line in installer.read_text().splitlines() if line.startswith('ExecStart='))
+   self.assertIn('--log.format=json --log.level=warn', unit_line)
+  with tempfile.TemporaryDirectory() as tmp:
+   key=Path(tmp)/'dummy.key';key.write_text('sk-not-a-real-key')
+   args=[str(binary),'doctor','--control-plane.tunnel-id=tunnel_0123456789abcdef0123456789abcdef',
+         '--control-plane.api-key=file:'+str(key),'--mcp.command=/bin/true',
+         '--health.unix-socket='+tmp+'/health.sock','--log.level=warn']
+   env={'PATH':'/usr/bin:/bin','HOME':tmp}
+   bad=subprocess.run(args,env=env,text=True,capture_output=True,timeout=10)
+   self.assertIn("log level requires 'struct-text' or 'json' log format",bad.stdout+bad.stderr)
+   good=subprocess.run(args+['--log.format=json'],env=env,text=True,capture_output=True,timeout=10)
+   output=good.stdout+good.stderr
+   self.assertNotIn('FAILED_CHECKS config_validation',output)
+   self.assertIn('mcp_command_executable   PASS',output)
+   self.assertIn('stdio targets are not probed over the network',output)
+   # doctor additionally tests a local health socket. This cloud sandbox forbids
+   # sockets; that independent FAIL is expected here, not config acceptance.
+
 if __name__=='__main__': unittest.main()
 ATLAS_EMBEDDED_FILE_2_END
 cat > requirements.txt <<'ATLAS_EMBEDDED_FILE_3_END'
@@ -434,7 +459,7 @@ cat > SHA256SUMS <<'ATLAS_EMBEDDED_FILE_5_END'
 2198ed2af4ba3a5a66268094e92bf309ff9b39798a2decf3a8f79c4a3bb8d9a5  server.py
 9d7640963b3bc0fdfb745c3cdad592391b11c70a13817bbbeefb0986d550826d  launch-mcp.sh
 b1a0e8947a80d3222c56a9b748ee0e4f7f19ce3273c76db72da57b0ff7b105ca  requirements.txt
-22cdb485d8f4120b7553c7046af4fd8c26b1c5bc6d7e5137ae4b2b8b3c9f4636  test_bridge.py
+ba5d700dfea9787a68c7bb449220afe44eb4d7b8e04091629841e68a0f13280d  test_bridge.py
 01260ee973d5510861bc32979739561edd33869f99f9f8cd324f6d0da5b2e692  tunnel-client
 4e3f48f0bfa1fda6f86d055c60064e50f5d776ff8c0f3c773ae6083000ccd6e9  cloudflared
 80003d8a8f38d6a0bd74aabc096e9f99a6e8fad8ed4da699e26a8231fa453aa1  cloudflared-manifest.json
@@ -443,7 +468,7 @@ f4c1d7ba32ef5bcf5cf03e2eefec5825ebafedf50fa330a36700a49c605c1ef4  LICENSE
 fa2de0dd02c120d9d4283059fa3bd489666808b616c4b788610558b8fb4198e6  tunnel-client-v0.0.16-linux-amd64-licenses.txt
 6e55f7d59863c7f0313d51c3da211c86ac068ac4cafa28713cf8004138d2a46b  tunnel-client-v0.0.16-linux-amd64.spdx.json
 ATLAS_EMBEDDED_FILE_5_END
-printf '%s  %s\n' a8a1a6b7dbbb716176e9e759ae67d19d5bf39856f2ca0811b0d3edd5cbffdf23 install.sh | sha256sum -c -
+printf '%s  %s\n' 99d79b13da8e9491a8f2a2a5714142a1cee547407fbc1019f697b99ad937fa95 install.sh | sha256sum -c -
 sha256sum -c SHA256SUMS
 # No existing install is overwritten. On failure inspect partial /opt/atlas-dev-bridge.
 # Preserve /var/lib/atlas-dev-bridge backups; do not blindly remove them.
